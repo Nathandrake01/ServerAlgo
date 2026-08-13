@@ -1,109 +1,68 @@
-# Trading Strategy Engine
+# ServerAlgo — Automated Trading Strategy Engine
 
-Automated options trading for Indian markets (NIFTY / SENSEX).  
-Deploys on your server in **one command**. You control the leverage.  
-The strategy logic is compiled — source code is not included.
+Automated options trading strategies for Indian markets (NIFTY / SENSEX).  
+Deploys on your server via an interactive **Telegram Setup Bot**. You control the lot sizes and leverage — the strategy execution logic is compiled and secure.
 
 ---
 
-## Quick start
+## ⚡ Quickstart (Zero-Friction Deployment)
+
+You only need **1 command** from your laptop terminal to kick off the setup. Everything else happens inside **Telegram**.
+
+### Step 1: Get Your Telegram Bot Token (1 minute)
+1. Open Telegram on your phone or desktop and search for **[@BotFather](https://t.me/BotFather)**.
+2. Send `/newbot`.
+3. Give your bot a name (e.g. `My Trading Bot`) and a username (e.g. `my_algo_trader_bot`).
+4. Copy the **HTTP API Bot Token** provided by BotFather (e.g., `8636830081:AAEcNjTE...`).
+
+---
+
+### Step 2: Run the 1-Line Installer from Your Laptop Terminal
+
+Run this single command from your Mac / Windows PowerShell / Linux terminal without needing to SSH first:
 
 ```bash
-# Prerequisites: Python 3 on your machine, SSH access to your server
-python3 deploy.py
-```
+# If using an SSH Key:
+ssh -i /path/to/your_key.key ubuntu@<YOUR_SERVER_IP> 'curl -fsSL https://raw.githubusercontent.com/Nathandrake01/ServerAlgo/main/bootstrap.sh | SETUP_BOT_TOKEN="<YOUR_BOT_TOKEN>" bash'
 
-Answer the questions. The script handles Docker, OpenAlgo, broker setup, Telegram alerts, and cron. Takes ~5 minutes.
-
----
-
-## What you get
-
-| Component | Source |
-|---|---|
-| OpenAlgo (trading platform) | Pulled from [marketcalls/openalgo](https://github.com/marketcalls/openalgo) |
-| Broker connectivity | Kotak Neo or Zerodha |
-| Telegram alerts | Trade entries, errors, EOD summary |
-| Auto-login | TOTP-based (Playwright for Zerodha) |
-| Daily cron | Auto-login at 08:55 IST, strategies at 09:11 IST |
-
----
-
-## Available strategies
-
-| Strategy | Type | Entry window | Exit |
-|---|---|---|---|
-| **PR918** | Premium Reentry | 09:18 – 10:15 IST | 14:30 |
-| **PR946** | Premium Reentry | 09:46 – 10:15 IST | 14:30 |
-| **Gamma** | Long insurance | 12:00 – 14:30 | 15:05 |
-
-You choose which strategies to run and at what multiplier (1x, 5x, 12x, etc.).
-
----
-
-## Requirements
-
-| | Minimum |
-|---|---|
-| **Server OS** | Ubuntu 22.04 (Python 3.10 — required by the engine) |
-| **Architecture** | ARM64 (aarch64) only |
-| **RAM** | 4 GB |
-| **Disk** | 20 GB free |
-| **Broker** | Kotak Neo or Zerodha (F&O enabled) |
-| **Your machine** | Python 3 with SSH access to the server |
-
----
-
-## After deployment
-
-```
-Your server
-├── /home/ubuntu/openalgo/
-│   ├── .env                    ← Broker credentials (never shared)
-│   ├── docker-compose.yaml     ← Container config
-│   │
-│   └── strategies/
-│       ├── engine/             ← Compiled strategy (.so — not readable)
-│       ├── configs/            ← Your strategy configs
-│       │   ├── pr_0918.live.yaml
-│       │   ├── pr_0946.live.yaml
-│       │   └── gamma.live.yaml
-│       ├── logs/               ← Daily logs (JSONL)
-│       └── status/             ← Current positions & PnL
-│
-Web UI:    http://<your-ip>:5000
-Admin:     admin / <generated password>
+# Or if logging in with password:
+ssh ubuntu@<YOUR_SERVER_IP> 'curl -fsSL https://raw.githubusercontent.com/Nathandrake01/ServerAlgo/main/bootstrap.sh | SETUP_BOT_TOKEN="<YOUR_BOT_TOKEN>" bash'
 ```
 
 ---
 
-## Changing leverage
+### Step 3: Complete Onboarding in Telegram
 
-Edit the config files on your server:
-```bash
-ssh ubuntu@<your-server>
-nano /home/ubuntu/openalgo/strategies/configs/pr_0918.live.yaml
-# Change: quantity_lots: 12 → quantity_lots: 24
-# Restart: docker restart openalgo-web
-```
-
-Changes take effect at the next market open.
+1. Open your new bot in Telegram and send `/start`.
+2. Enter your **License Key**.
+3. Tap **[ Zerodha (Kite) ]** or **[ Kotak Neo ]**.
+4. Enter credentials (passwords, MPIN, and TOTP secrets are auto-deleted from chat after receipt).
+5. Choose your strategies & lots (e.g. `pr_0918:1 gamma:1`).
+6. Tap **[ 🚀 Deploy Strategies ]**.
 
 ---
 
-## Updating the engine
+## 🛡️ Security & Zero-Custody Guarantee
 
-When a new version is released:
-```bash
-python3 deploy.py
-```
-Select "Use existing installation" when prompted. Configs and credentials are preserved.
+- **Zero Provider Custody:** All broker credentials, passwords, and TOTP secrets stay 100% on **your own server** in an encrypted `.env` file.
+- **Auto-Deleting Secrets:** Credential messages sent during Telegram onboarding are immediately deleted from chat history.
+- **Compiled Black-Box Logic:** Strategy engine parameters and execution models are compiled into high-performance native binaries (`.so`).
+- **24/7 Mobile Control:** After setup, the bot becomes your personal ops controller (`/status`, `/positions`, `/exit_all`, `/killall`).
 
 ---
 
-## Security
+## 📋 System Requirements
 
-- Strategy logic is **compiled to native binaries** (.so files) — not readable
-- Broker credentials are stored **only on your server** in `.env`
-- Telegram tokens never leave your server
-- SSH key never leaves your machine
+| Specification | Minimum Requirement |
+| :--- | :--- |
+| **Server OS** | Ubuntu 22.04 LTS (Python 3.10) |
+| **Architecture** | ARM64 (aarch64) recommended (Oracle Cloud, AWS Graviton, etc.) |
+| **RAM** | 2 GB minimum (4 GB recommended) |
+| **Disk Space** | 20 GB SSD |
+| **Broker** | Zerodha Kite or Kotak Neo (F&O segment enabled) |
+
+---
+
+## 📖 Full Documentation
+For complete step-by-step instructions and runbook details, see:
+👉 **[SERVERALGO_CLIENT_SETUP.md](SERVERALGO_CLIENT_SETUP.md)**

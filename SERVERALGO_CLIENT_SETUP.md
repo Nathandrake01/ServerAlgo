@@ -30,19 +30,20 @@ Before starting, ensure you have:
 
 ---
 
-## ⚡ Step 2: One-Line Server Setup
+## ⚡ Step 2: One-Line Installer from Your Laptop
 
-1. Open your terminal (or PowerShell / Putty) and **SSH into your Ubuntu server**:
-   ```bash
-   ssh ubuntu@<YOUR_SERVER_IP>
-   ```
+You can run the setup directly from your laptop terminal (Mac Terminal, Windows PowerShell, or Linux) **without needing to SSH in first**:
 
-2. Run the following single setup command (replace `<YOUR_BOT_TOKEN>` with the token from Step 1):
-   ```bash
-   curl -fsSL https://raw.githubusercontent.com/Nathandrake01/ServerAlgo/main/bootstrap.sh | SETUP_BOT_TOKEN="<YOUR_BOT_TOKEN>" bash
-   ```
+```bash
+# Option A: If your server uses an SSH key:
+ssh -i /path/to/your_key.key ubuntu@<YOUR_SERVER_IP> 'curl -fsSL https://raw.githubusercontent.com/Nathandrake01/ServerAlgo/main/bootstrap.sh | SETUP_BOT_TOKEN="<YOUR_BOT_TOKEN>" bash'
 
-*(This automatically installs Docker, configures the setup service, and links it to your Telegram bot in under 60 seconds).*
+# Option B: If your server uses a password:
+ssh ubuntu@<YOUR_SERVER_IP> 'curl -fsSL https://raw.githubusercontent.com/Nathandrake01/ServerAlgo/main/bootstrap.sh | SETUP_BOT_TOKEN="<YOUR_BOT_TOKEN>" bash'
+```
+
+*(This connects to your server, installs Docker, and launches your Telegram setup bot service in under 60 seconds).*
+
 
 ---
 
