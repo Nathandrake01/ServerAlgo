@@ -14,8 +14,9 @@ import os
 from pathlib import Path
 
 import requests
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
-from telegram.ext import (Application, ApplicationBuilder, CommandHandler,
+from telegram import (InlineKeyboardButton, InlineKeyboardMarkup,
+                      ReplyKeyboardMarkup, ReplyKeyboardRemove, Update)
+from telegram.ext import (Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler,
                           ContextTypes, ConversationHandler, MessageHandler, filters)
 
 import deploy_core
@@ -27,9 +28,10 @@ STATE_FILE = STATE_DIR / "agent_state.json"
 
 # Conversation states
 (LICENSE, BROKER, Z_APIKEY, Z_SECRET, Z_USERID, Z_PASSWORD, Z_TOTP,
- TG_TOKEN, STRATS, CONFIRM) = range(10)
+ K_MOBILE, K_MPIN, K_APIKEY, K_SECRET, K_TOTP,
+ TG_TOKEN, STRATS, CONFIRM) = range(15)
 
-SECRET_STATES = {Z_SECRET, Z_PASSWORD, Z_TOTP, TG_TOKEN}
+SECRET_STATES = {Z_SECRET, Z_PASSWORD, Z_TOTP, K_MPIN, K_SECRET, K_TOTP, TG_TOKEN}
 
 
 def load_state() -> dict:
@@ -66,6 +68,15 @@ async def guard(update: Update) -> bool:
     return pc is None or update.effective_chat.id == pc
 
 
+def get_broker_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Zerodha (Kite)", callback_data="broker_zerodha"),
+            InlineKeyboardButton("Kotak Neo", callback_data="broker_kotak"),
+        ]
+    ])
+
+
 # ------------------------------------------------------------- handlers ---
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not await guard(update):
@@ -90,27 +101,56 @@ async def got_license(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     st = load_state(); st["chat_id"] = update.effective_chat.id; save_state(st)
     ctx.user_data["license"] = key
     await update.message.reply_text(
-        "License valid ✅\n\nWhich broker?",
-        reply_markup=ReplyKeyboardMarkup([["Zerodha", "Kotak"]], one_time_keyboard=True, resize_keyboard=True))
+        "License valid ✅\n\nSelect your broker:",
+        reply_markup=get_broker_keyboard())
     return BROKER
 
 
-async def got_broker(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    choice = update.message.text.strip().lower()
-    if "zerodha" not in choice and "kotak" not in choice:
-        await update.message.reply_text("Please tap Zerodha or Kotak.")
-        return BROKER
-    ctx.user_data["broker"] = "zerodha" if "zerodha" in choice else "kotak"
+async def broker_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    choice = query.data
     ctx.user_data["creds"] = {}
-    if ctx.user_data["broker"] == "kotak":
+    if choice == "broker_zerodha":
+        ctx.user_data["broker"] = "zerodha"
+        await query.edit_message_text(
+            "Zerodha selected ✅\n\nI'll ask for each detail one at a time.\n\nSend your *Kite API key*.",
+            parse_mode="Markdown"
+        )
+        return Z_APIKEY
+    elif choice == "broker_kotak":
+        ctx.user_data["broker"] = "kotak"
+        await query.edit_message_text(
+            "Kotak selected ✅\n\nSend your registered *10-digit mobile number*.",
+            parse_mode="Markdown"
+        )
+        return K_MOBILE
+    return BROKER
+
+
+async def got_broker_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    choice = update.message.text.strip().lower()
+    ctx.user_data["creds"] = {}
+    if "zerodha" in choice or choice == "1":
+        ctx.user_data["broker"] = "zerodha"
         await update.message.reply_text(
-            "Kotak flow isn't wired in this build yet — reply /cancel and use Zerodha for now.",
-            reply_markup=ReplyKeyboardRemove())
+            "Zerodha selected ✅\n\nI'll ask for each detail one at a time.\n\nSend your *Kite API key*.",
+            parse_mode="Markdown"
+        )
+        return Z_APIKEY
+    elif "kotak" in choice or choice == "2":
+        ctx.user_data["broker"] = "kotak"
+        await update.message.reply_text(
+            "Kotak selected ✅\n\nSend your registered *10-digit mobile number*.",
+            parse_mode="Markdown"
+        )
+        return K_MOBILE
+    else:
+        await update.message.reply_text(
+            "Please select a valid broker using the buttons below:",
+            reply_markup=get_broker_keyboard()
+        )
         return BROKER
-    await update.message.reply_text(
-        "Zerodha selected. I'll ask for each detail one at a time.\n\n"
-        "Send your *Kite API key*.", parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
-    return Z_APIKEY
 
 
 async def _delete_secret(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -121,6 +161,7 @@ async def _delete_secret(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         pass
 
 
+# --- Zerodha steps ---
 async def z_apikey(update: Update, ctx):
     ctx.user_data["creds"]["BROKER_API_KEY"] = update.message.text.strip()
     await update.message.reply_text("Send your *Kite API secret*.", parse_mode="Markdown")
@@ -173,10 +214,62 @@ async def z_totp(update: Update, ctx):
                                    "External-TOTP key from Kite and send again.")
         return Z_TOTP
     ctx.user_data["creds"]["ZERODHA_TOTP_SECRET"] = sec
+    return await prompt_tg_token(update, ctx)
+
+
+# --- Kotak steps ---
+async def k_mobile(update: Update, ctx):
+    ctx.user_data["creds"]["KOTAK_MOBILE"] = update.message.text.strip()
+    await update.message.reply_text("Send your *Kotak 6-digit MPIN*.", parse_mode="Markdown")
+    return K_MPIN
+
+
+async def k_mpin(update: Update, ctx):
+    ctx.user_data["creds"]["KOTAK_MPIN"] = update.message.text.strip()
+    await _delete_secret(update, ctx)
+    await ctx.bot.send_message(ctx.user_data["chat_id"],
+                               "Got it (message deleted). Send your *Kotak Neo Consumer API Key*.", parse_mode="Markdown")
+    return K_APIKEY
+
+
+async def k_apikey(update: Update, ctx):
+    ctx.user_data["creds"]["BROKER_API_KEY"] = update.message.text.strip()
+    await update.message.reply_text("Send your *Kotak Neo Consumer API Secret*.", parse_mode="Markdown")
+    return K_SECRET
+
+
+async def k_secret(update: Update, ctx):
+    ctx.user_data["creds"]["BROKER_API_SECRET"] = update.message.text.strip()
+    await _delete_secret(update, ctx)
     await ctx.bot.send_message(
         ctx.user_data["chat_id"],
-        "Got it (message deleted). This bot's token will be used for trade alerts too.\n"
-        "Send your bot token again to confirm (from @BotFather), or /skip to reuse this one.")
+        "Got it (message deleted).\n\nNow send your *Kotak TOTP Secret key* (base32).", parse_mode="Markdown")
+    return K_TOTP
+
+
+async def k_totp(update: Update, ctx):
+    sec = update.message.text.strip().replace(" ", "").upper()
+    await _delete_secret(update, ctx)
+    if not _is_base32(sec):
+        await ctx.bot.send_message(ctx.user_data["chat_id"],
+                                   "That isn't a valid base32 TOTP secret. Check and send again.")
+        return K_TOTP
+    ctx.user_data["creds"]["KOTAK_TOTP_SECRET"] = sec
+    return await prompt_tg_token(update, ctx)
+
+
+# --- Shared telegram/strategy/deploy steps ---
+async def prompt_tg_token(update: Update, ctx):
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏩ Reuse Current Bot Token", callback_data="tg_skip")]
+    ])
+    chat_id = ctx.user_data["chat_id"]
+    await ctx.bot.send_message(
+        chat_id,
+        "Got it (message deleted). This bot's token will be used for trade alerts.\n\n"
+        "Send a new bot token from @BotFather, or tap below to reuse this bot token.",
+        reply_markup=keyboard
+    )
     return TG_TOKEN
 
 
@@ -189,6 +282,10 @@ async def tg_token(update: Update, ctx):
 
 
 async def tg_skip(update: Update, ctx):
+    query = update.callback_query
+    if query:
+        await query.answer()
+        await query.edit_message_text("Reusing current bot token for alerts ✅")
     ctx.user_data["creds"]["TELEGRAM_BOT_TOKEN"] = os.environ.get("SETUP_BOT_TOKEN", "")
     ctx.user_data["creds"]["TELEGRAM_CHAT_ID"] = str(ctx.user_data["chat_id"])
     return await ask_strategies(update, ctx)
@@ -199,7 +296,7 @@ async def ask_strategies(update: Update, ctx):
     await ctx.bot.send_message(
         ctx.user_data["chat_id"],
         "Which strategies + how many lots? Reply like:\n`pr_0918:1 gamma:1 delta:1`\n"
-        "(any of pr_0918, pr_0946, gamma, delta)", parse_mode="Markdown")
+        "(Available: pr_0918, pr_0946, gamma, delta)", parse_mode="Markdown")
     return STRATS
 
 
@@ -215,16 +312,48 @@ async def got_strategies(update: Update, ctx):
         return STRATS
     ctx.user_data["strategies"] = strat
     summary = ", ".join(f"{k} {v}x" for k, v in strat.items())
+    b_name = ctx.user_data.get("broker", "zerodha").capitalize()
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🚀 Deploy Strategies", callback_data="confirm_deploy"),
+            InlineKeyboardButton("❌ Cancel", callback_data="confirm_cancel"),
+        ]
+    ])
     await update.message.reply_text(
-        f"Ready to deploy:\nBroker: Zerodha\nStrategies: {summary}\n\nReply *deploy* to start, or /cancel.",
-        parse_mode="Markdown")
+        f"Ready to deploy:\n*Broker:* {b_name}\n*Strategies:* {summary}\n\nClick *Deploy Strategies* below to start.",
+        parse_mode="Markdown",
+        reply_markup=keyboard)
     return CONFIRM
 
 
+async def confirm_button(update: Update, ctx):
+    query = update.callback_query
+    await query.answer()
+    if query.data == "confirm_deploy":
+        await query.edit_message_text("Starting deployment... 🚀")
+        return await start_deploy_execution(ctx)
+    else:
+        await query.edit_message_text("Deployment cancelled.")
+        return ConversationHandler.END
+
+
 async def do_deploy(update: Update, ctx):
-    if update.message.text.strip().lower() != "deploy":
-        await update.message.reply_text("Reply *deploy* to start, or /cancel.", parse_mode="Markdown")
+    txt = update.message.text.strip().lower()
+    if txt != "deploy":
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🚀 Deploy Strategies", callback_data="confirm_deploy"),
+                InlineKeyboardButton("❌ Cancel", callback_data="confirm_cancel"),
+            ]
+        ])
+        await update.message.reply_text("Click *Deploy Strategies* below or reply *deploy* to start.",
+                                        parse_mode="Markdown", reply_markup=keyboard)
         return CONFIRM
+    return await start_deploy_execution(ctx)
+
+
+async def start_deploy_execution(ctx):
     chat_id = ctx.user_data["chat_id"]
     answers = {"broker": ctx.user_data["broker"], "creds": ctx.user_data["creds"],
                "strategies": ctx.user_data["strategies"], "user": os.environ.get("USER") or __import__("getpass").getuser()}
@@ -236,15 +365,17 @@ async def do_deploy(update: Update, ctx):
 
     result = await asyncio.to_thread(deploy_core.run_deploy, answers, log)
     if result.get("ok"):
+        broker = ctx.user_data.get("broker", "zerodha")
+        cb_path = f"/{broker}/callback"
         await ctx.bot.send_message(
             chat_id,
             "✅ Deployment complete!\n\n"
             f"Admin login: {result['admin_user']} / {result['admin_pass']}\n"
             "Strategies launch 09:10 IST, Mon–Fri.\n\n"
-            "One-time on Kite: set Redirect URL to http://127.0.0.1:5000/zerodha/callback "
+            f"One-time setup on broker portal: set Redirect URL to http://127.0.0.1:5000{cb_path} "
             "and whitelist this server's IP.\n\n"
             "Each morning, connect your broker in the OpenAlgo dashboard before 09:10.\n"
-            "Use /status any time.")
+            "Control commands: /status, /positions, /exit_all, /killall")
         st = load_state(); st["deployed"] = True; save_state(st)
     else:
         await ctx.bot.send_message(chat_id, f"⚠️ Deployment failed: {result.get('error')}\n"
@@ -260,14 +391,47 @@ async def cancel(update: Update, ctx):
     return ConversationHandler.END
 
 
+# --- Ops control handlers ---
 async def status(update: Update, ctx):
     if not await guard(update):
         return
     user = os.environ.get("USER") or __import__("getpass").getuser()
-    rc, out = deploy_core.LocalRunner().sh(
-        f"docker ps --filter name=openalgo-web --format '{{{{.Status}}}}'; "
-        f"ls /home/{user}/openalgo/strategies/logs/ 2>/dev/null | tail -5")
-    await update.message.reply_text(f"Status:\n{out.strip() or 'nothing yet'}")
+    r = deploy_core.LocalRunner()
+    _, d_out = r.sh("docker ps --filter name=openalgo-web --format 'Container: {{.Status}}'")
+    _, p_out = r.sh("pgrep -a -f 'run_with_env.py strategies/' || echo 'No strategies currently active.'")
+    _, l_out = r.sh(f"ls -t /home/{user}/openalgo/strategies/logs/*.log 2>/dev/null | head -3 | xargs tail -n 2 2>/dev/null || echo 'No logs yet.'")
+    
+    msg = (f"📊 *ServerAlgo System Status*\n\n"
+           f"*Docker:* {d_out.strip()}\n\n"
+           f"*Active Strategies:*\n`{p_out.strip()}`\n\n"
+           f"*Latest Log Tail:*\n`{l_out.strip()}`")
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+
+async def positions(update: Update, ctx):
+    if not await guard(update):
+        return
+    r = deploy_core.LocalRunner()
+    rc, out = r.sh("curl -s http://127.0.0.1:5000/api/v1/positions || echo 'Could not connect to OpenAlgo API.'")
+    await update.message.reply_text(f"📈 *OpenAlgo Positions:*\n```json\n{out.strip()[:1000]}\n```", parse_mode="Markdown")
+
+
+async def exit_all(update: Update, ctx):
+    if not await guard(update):
+        return
+    r = deploy_core.LocalRunner()
+    rc, out = r.sh("pkill -f 'run_with_env.py strategies/' 2>&1")
+    await update.message.reply_text("🛑 Sent terminate signal to all active strategy runners.", parse_mode="Markdown")
+
+
+async def killall(update: Update, ctx):
+    if not await guard(update):
+        return
+    r = deploy_core.LocalRunner()
+    user = os.environ.get("USER") or __import__("getpass").getuser()
+    r.sh("pkill -f 'run_with_env.py strategies/' 2>&1")
+    r.sh(f"cd /home/{user}/openalgo && docker compose stop 2>&1")
+    await update.message.reply_text("⚠️ Stopped OpenAlgo container and killed all active strategy processes.", parse_mode="Markdown")
 
 
 def main():
@@ -277,21 +441,41 @@ def main():
         entry_points=[CommandHandler("start", start)],
         states={
             LICENSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_license)],
-            BROKER: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_broker)],
+            BROKER: [
+                CallbackQueryHandler(broker_button, pattern="^broker_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, got_broker_text)
+            ],
+            # Zerodha
             Z_APIKEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, z_apikey)],
             Z_SECRET: [MessageHandler(filters.TEXT & ~filters.COMMAND, z_secret)],
             Z_USERID: [MessageHandler(filters.TEXT & ~filters.COMMAND, z_userid)],
             Z_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, z_password)],
             Z_TOTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, z_totp)],
-            TG_TOKEN: [CommandHandler("skip", tg_skip),
-                       MessageHandler(filters.TEXT & ~filters.COMMAND, tg_token)],
+            # Kotak
+            K_MOBILE: [MessageHandler(filters.TEXT & ~filters.COMMAND, k_mobile)],
+            K_MPIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, k_mpin)],
+            K_APIKEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, k_apikey)],
+            K_SECRET: [MessageHandler(filters.TEXT & ~filters.COMMAND, k_secret)],
+            K_TOTP: [MessageHandler(filters.TEXT & ~filters.COMMAND, k_totp)],
+            # Shared
+            TG_TOKEN: [
+                CallbackQueryHandler(tg_skip, pattern="^tg_skip$"),
+                CommandHandler("skip", tg_skip),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, tg_token)
+            ],
             STRATS: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_strategies)],
-            CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, do_deploy)],
+            CONFIRM: [
+                CallbackQueryHandler(confirm_button, pattern="^confirm_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, do_deploy)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     app.add_handler(conv)
     app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("positions", positions))
+    app.add_handler(CommandHandler("exit_all", exit_all))
+    app.add_handler(CommandHandler("killall", killall))
     app.run_polling()
 
 
