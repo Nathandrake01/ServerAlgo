@@ -21,6 +21,12 @@ die() { echo -e "\033[91m[serveralgo] ERROR:\033[0m $*" >&2; exit 1; }
 
 [ -n "${SETUP_BOT_TOKEN:-}" ] || die "Set SETUP_BOT_TOKEN=<your @BotFather token> and re-run."
 
+# --- 0. permissions & environment ---
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+  SUDO="sudo"
+fi
+
 # --- 0. sanity: ARM64 + Python 3.10 (engine requirement) ---
 ARCH="$(uname -m)"
 [ "$ARCH" = "aarch64" ] || say "WARNING: arch is $ARCH; the engine needs ARM64 (aarch64)."
@@ -29,14 +35,14 @@ PYV="$(python3 -c 'import sys;print("%d.%d"%sys.version_info[:2])' 2>/dev/null |
 
 # --- 1. base packages ---
 say "Installing base packages..."
-sudo apt-get update -y -qq
-sudo apt-get install -y -qq git curl python3-venv python3-pip
+$SUDO apt-get update -y -qq
+$SUDO apt-get install -y -qq git curl python3-venv python3-pip
 
 # --- 2. docker ---
 if ! command -v docker >/dev/null 2>&1; then
   say "Installing Docker..."
-  curl -fsSL https://get.docker.com | sudo bash
-  sudo usermod -aG docker "$USER_NAME" || true
+  curl -fsSL https://get.docker.com | $SUDO bash
+  $SUDO usermod -aG docker "$USER_NAME" || true
 fi
 
 # --- 3. fetch the agent ---
@@ -57,7 +63,7 @@ python3 -m venv "${AGENT_DIR}/.venv"
 # --- 5. systemd service (runs the bot 24/7, survives reboots) ---
 say "Installing the systemd service..."
 SERVICE=/etc/systemd/system/serveralgo-setup.service
-sudo tee "$SERVICE" >/dev/null <<UNIT
+$SUDO tee "$SERVICE" >/dev/null <<UNIT
 [Unit]
 Description=ServerAlgo setup + ops bot
 After=network-online.target docker.service
@@ -77,8 +83,8 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-sudo systemctl daemon-reload
-sudo systemctl enable --now serveralgo-setup.service
+$SUDO systemctl daemon-reload
+$SUDO systemctl enable --now serveralgo-setup.service
 
 say "Done. Open your Telegram bot and send /start to finish setup."
 say "  logs:  journalctl -u serveralgo-setup -f"
