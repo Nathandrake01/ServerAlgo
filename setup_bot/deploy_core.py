@@ -113,10 +113,24 @@ def entry_script(strategy: str) -> str:
             "\nif __name__ == \"__main__\":\n    " + call + "\n")
 
 
-def env_overrides(broker, creds, port, ws_port, preserve=None):
+def get_public_ip() -> str:
+    """Fetch the server's public IP address for UI dashboard and OAuth callback URLs."""
+    import requests
+    for url in ("https://api.ipify.org", "https://ifconfig.me", "https://icanhazip.com"):
+        try:
+            res = requests.get(url, timeout=3)
+            if res.ok and res.text.strip():
+                return res.text.strip()
+        except Exception:
+            continue
+    return "127.0.0.1"
+
+
+def env_overrides(broker, creds, port, ws_port, preserve=None, public_ip=None):
     """Managed .env keys. Crypto keys + admin account are PRESERVED across re-runs."""
     preserve = preserve or {}
     alp = string.ascii_lowercase + string.digits
+    pub_ip = public_ip or "127.0.0.1"
 
     def keep(key, gen):
         return preserve[key] if preserve.get(key) else gen()
@@ -126,7 +140,7 @@ def env_overrides(broker, creds, port, ws_port, preserve=None):
     ov = {
         "BROKER_API_KEY": creds["BROKER_API_KEY"],
         "BROKER_API_SECRET": creds["BROKER_API_SECRET"],
-        "REDIRECT_URL": f"http://127.0.0.1:{port}/{broker}/callback",
+        "REDIRECT_URL": f"http://{pub_ip}:{port}/{broker}/callback",
         "VALID_BROKERS": "zerodha" if broker == "zerodha" else "kotak",
         "APP_KEY": keep("APP_KEY", lambda: secrets.token_hex(32)),
         "API_KEY_PEPPER": keep("API_KEY_PEPPER", lambda: secrets.token_hex(32)),
@@ -134,7 +148,7 @@ def env_overrides(broker, creds, port, ws_port, preserve=None):
         "OPENALGO_USER": admin_user,
         "OPENALGO_PASS": admin_pass,
         "OPENALGO_API_KEY": preserve.get("OPENALGO_API_KEY", ""),
-        "FLASK_HOST_IP": "127.0.0.1", "FLASK_PORT": port,
+        "FLASK_HOST_IP": "0.0.0.0", "FLASK_PORT": port,
         "FLASK_ENV": "production", "FLASK_DEBUG": "0",
         "WEBSOCKET_PORT": ws_port, "WEBSOCKET_HOST": "127.0.0.1",
         "WEBSOCKET_URL": f"ws://127.0.0.1:{ws_port}",
@@ -152,6 +166,7 @@ def env_overrides(broker, creds, port, ws_port, preserve=None):
                    "ZERODHA_PASSWORD": creds.get("ZERODHA_PASSWORD", ""),
                    "ZERODHA_TOTP_SECRET": creds.get("ZERODHA_TOTP_SECRET", "")})
     return ov, admin_user, admin_pass
+
 
 
 def apply_env_overrides(env_path: str, overrides: dict) -> None:
@@ -243,7 +258,8 @@ def run_deploy(answers: dict, log=print, runner: LocalRunner | None = None) -> d
         if not r.exists(f"{inst}/.sample.env"):
             return {"ok": False, "error": ".sample.env missing in OpenAlgo clone"}
         r.sh(f"cp {inst}/.sample.env {env_path}")
-    overrides, admin_user, admin_pass = env_overrides(broker, creds, port, ws_port, preserve)
+    public_ip = get_public_ip()
+    overrides, admin_user, admin_pass = env_overrides(broker, creds, port, ws_port, preserve, public_ip=public_ip)
     apply_env_overrides(env_path, overrides)
     r.sh(f"chmod 644 {env_path}")
 
@@ -257,7 +273,7 @@ def run_deploy(answers: dict, log=print, runner: LocalRunner | None = None) -> d
       dockerfile: Dockerfile
     container_name: {cname}
     ports:
-      - "127.0.0.1:{port}:{port}"
+      - "0.0.0.0:{port}:{port}"
       - "127.0.0.1:{ws_port}:{ws_port}"
     volumes:
       - openalgo_db:/app/db
@@ -375,4 +391,5 @@ pkill -f "run_with_env.py strategies/" 2>/dev/null; sleep 1
     r.sh(f"( crontab -l 2>/dev/null | grep -v '{inst}' ; printf '%s\\n' \"{cron}\" ) | crontab -")
 
     return {"ok": True, "admin_user": admin_user, "admin_pass": admin_pass,
-            "url": f"http://127.0.0.1:{port}", "account_existed": account_exists}
+            "url": f"http://{public_ip}:{port}", "public_ip": public_ip, "account_existed": account_exists}
+

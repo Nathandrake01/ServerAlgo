@@ -347,7 +347,7 @@ def main() -> None:
 
     load_env(Path(__file__).resolve().parent / ".env")
 
-    host = os.environ.get("HOST_SERVER", "http://127.0.0.1:5001").strip()
+    host = os.environ.get("HOST_SERVER", "http://127.0.0.1:5000").strip()
     api_key = os.environ.get("BROKER_API_KEY", "").strip()
 
     required = ["OPENALGO_USER", "OPENALGO_PASS", "BROKER_API_KEY", "BROKER_API_SECRET"]

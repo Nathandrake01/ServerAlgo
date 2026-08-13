@@ -66,11 +66,14 @@ The bot will stream real-time progress as it builds Docker containers and prepar
 
 Once deployment completes, your setup bot automatically becomes your **Operations Control Bot**.
 
-### 1. One-Time Broker Redirect URL Setup
-- **Zerodha:** Log into Kite Developer Portal and set Redirect URL to:
-  `http://127.0.0.1:5000/zerodha/callback`
-- **Kotak:** Set Redirect URL to:
-  `http://127.0.0.1:5000/kotak/callback`
+### 1. One-Time Broker Portal Setup
+- **Zerodha:** Log into Kite Developer Portal and set:
+  - **Redirect URL:** `http://<YOUR_SERVER_IP>:5000/zerodha/callback`
+  - **IP Whitelist:** `<YOUR_SERVER_IP>`
+- **Kotak:** Set:
+  - **Redirect URL:** `http://<YOUR_SERVER_IP>:5000/kotak/callback`
+  - **IP Whitelist:** `<YOUR_SERVER_IP>`
+
 
 ### 2. Daily Connection Nudge
 Each morning before **09:10 AM IST** (Mon–Fri), open your OpenAlgo dashboard at `http://<YOUR_SERVER_IP>:5000` and click **Connect Broker** to authorize the day's session.

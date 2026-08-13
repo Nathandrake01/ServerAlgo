@@ -107,11 +107,18 @@ class TestDeployCorePureHelpers(unittest.TestCase):
             "KOTAK_MPIN": "123456",
             "KOTAK_TOTP_SECRET": "JBSWY3DPEHPK3PXP",
         }
-        ov, user, _ = deploy_core.env_overrides("kotak", creds, "5000", "8765")
+        ov, user, _ = deploy_core.env_overrides("kotak", creds, "5000", "8765", public_ip="1.2.3.4")
         self.assertEqual(ov["VALID_BROKERS"], "kotak")
         self.assertEqual(ov["KOTAK_MOBILE"], "9876543210")
         self.assertEqual(ov["KOTAK_MPIN"], "123456")
         self.assertEqual(ov["KOTAK_TOTP_SECRET"], "JBSWY3DPEHPK3PXP")
+        self.assertEqual(ov["REDIRECT_URL"], "http://1.2.3.4:5000/kotak/callback")
+        self.assertEqual(ov["FLASK_HOST_IP"], "0.0.0.0")
+
+    def test_get_public_ip_fallback(self):
+        ip = deploy_core.get_public_ip()
+        self.assertTrue(isinstance(ip, str) and len(ip) > 0)
+
 
 
 class TestSetupAgentHelpers(unittest.TestCase):

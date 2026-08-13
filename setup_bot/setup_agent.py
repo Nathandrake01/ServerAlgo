@@ -520,15 +520,22 @@ async def start_deploy_execution(ctx):
     if result.get("ok"):
         broker = ctx.user_data.get("broker", "zerodha")
         cb_path = f"/{broker}/callback"
+        public_ip = result.get("public_ip") or deploy_core.get_public_ip()
+        dashboard_url = result.get("url") or f"http://{public_ip}:5000"
+        cb_url = f"http://{public_ip}:5000{cb_path}"
         await ctx.bot.send_message(
             chat_id,
-            "✅ Deployment complete!\n\n"
-            f"Admin login: {result['admin_user']} / {result['admin_pass']}\n"
-            "Strategies launch 09:10 IST, Mon–Fri.\n\n"
-            f"One-time setup on broker portal: set Redirect URL to http://127.0.0.1:5000{cb_path} "
-            "and whitelist this server's IP.\n\n"
-            "Each morning, connect your broker in the OpenAlgo dashboard before 09:10.\n"
-            "Control commands: /status, /positions, /exit_all, /killall")
+            "✅ *Deployment complete!*\n\n"
+            f"🌐 *Dashboard:* {dashboard_url}\n"
+            f"🔑 *Admin Login:* `{result['admin_user']}` / `{result['admin_pass']}`\n\n"
+            f"⚙️ *One-Time Broker Portal Setup:*\n"
+            f"• *Redirect URL:* `{cb_url}`\n"
+            f"• *IP Whitelist:* `{public_ip}`\n\n"
+            "⏰ *Daily Schedule:*\n"
+            "• 08:58 IST: Auto-login & session refresh\n"
+            "• 09:10 IST: Strategies launch (Mon–Fri)\n\n"
+            "📱 *Control Commands:* /status, /positions, /exit_all, /killall",
+            parse_mode="Markdown")
         st = load_state(); st["deployed"] = True; save_state(st)
     else:
         await ctx.bot.send_message(chat_id, f"⚠️ Deployment failed: {result.get('error')}\n"
@@ -536,6 +543,7 @@ async def start_deploy_execution(ctx):
                                    parse_mode="Markdown")
         return CONFIRM
     return ConversationHandler.END
+
 
 
 async def cancel(update: Update, ctx):
