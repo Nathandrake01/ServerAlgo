@@ -291,27 +291,180 @@ async def tg_skip(update: Update, ctx):
     return await ask_strategies(update, ctx)
 
 
+def get_strategy_config_keyboard(strats: dict) -> InlineKeyboardMarkup:
+    """Build interactive inline keyboard for choosing strategy lot multipliers."""
+    buttons = []
+    row = []
+    for name in deploy_core.STRATEGY_NAMES:
+        qty = strats.get(name, 1)
+        status_icon = "🟢" if qty > 0 else "🔴 (0x)"
+        label = f"{status_icon} {name}: {qty}x"
+        row.append(InlineKeyboardButton(label, callback_data=f"strat_edit_{name}"))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+
+    buttons.append([
+        InlineKeyboardButton("🔄 Reset All to 1x", callback_data="strat_reset_all"),
+        InlineKeyboardButton("✅ Confirm & Continue", callback_data="strat_confirm_all")
+    ])
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_multiplier_keyboard(name: str, current_qty: int) -> InlineKeyboardMarkup:
+    """Build multiplier picker keyboard for a specific strategy."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🔴 0x (Disabled)", callback_data=f"strat_set_{name}_0"),
+            InlineKeyboardButton("1x", callback_data=f"strat_set_{name}_1"),
+            InlineKeyboardButton("2x", callback_data=f"strat_set_{name}_2"),
+        ],
+        [
+            InlineKeyboardButton("3x", callback_data=f"strat_set_{name}_3"),
+            InlineKeyboardButton("5x", callback_data=f"strat_set_{name}_5"),
+            InlineKeyboardButton("10x", callback_data=f"strat_set_{name}_10"),
+        ],
+        [
+            InlineKeyboardButton("◀️ Back to Strategy List", callback_data="strat_back_main")
+        ]
+    ])
+
+
 async def ask_strategies(update: Update, ctx):
-    ctx.user_data["strategies"] = {}
+    if "strategies" not in ctx.user_data or not ctx.user_data["strategies"]:
+        ctx.user_data["strategies"] = {s: 1 for s in deploy_core.STRATEGY_NAMES}
+
+    strats = ctx.user_data["strategies"]
+    summary_lines = []
+    for s in deploy_core.STRATEGY_NAMES:
+        q = strats.get(s, 0)
+        status = f"*Active ({q}x lot)*" if q > 0 else "❌ *Disabled (0x)*"
+        summary_lines.append(f"• `{s}`: {status}")
+
+    msg = (
+        "⚙️ *Configure Strategies & Lot Multipliers*\n\n"
+        + "\n".join(summary_lines) + "\n\n"
+        "Tap a strategy button below to change its lot multiplier (set to *0x* to disable). "
+        "When ready, tap *Confirm & Continue*."
+    )
+
+    chat_id = ctx.user_data["chat_id"]
     await ctx.bot.send_message(
-        ctx.user_data["chat_id"],
-        "Which strategies + how many lots? Reply like:\n`pr_0918:1 gamma:1 delta:1`\n"
-        "(Available: pr_0918, pr_0946, gamma, delta)", parse_mode="Markdown")
+        chat_id,
+        msg,
+        parse_mode="Markdown",
+        reply_markup=get_strategy_config_keyboard(strats)
+    )
+    return STRATS
+
+
+async def update_strat_summary(query, ctx):
+    strats = ctx.user_data.get("strategies") or {s: 1 for s in deploy_core.STRATEGY_NAMES}
+    summary_lines = []
+    for s in deploy_core.STRATEGY_NAMES:
+        q = strats.get(s, 0)
+        status = f"*Active ({q}x lot)*" if q > 0 else "❌ *Disabled (0x)*"
+        summary_lines.append(f"• `{s}`: {status}")
+
+    msg = (
+        "⚙️ *Configure Strategies & Lot Multipliers*\n\n"
+        + "\n".join(summary_lines) + "\n\n"
+        "Tap a strategy button below to change its lot multiplier (set to *0x* to disable). "
+        "When ready, tap *Confirm & Continue*."
+    )
+    await query.edit_message_text(
+        msg,
+        parse_mode="Markdown",
+        reply_markup=get_strategy_config_keyboard(strats)
+    )
+    return STRATS
+
+
+async def strat_button_handler(update: Update, ctx):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    strats = ctx.user_data.get("strategies") or {s: 1 for s in deploy_core.STRATEGY_NAMES}
+
+    if data.startswith("strat_edit_"):
+        name = data.replace("strat_edit_", "")
+        current = strats.get(name, 1)
+        msg = (
+            f"⚙️ *Adjust Lot Multiplier for `{name}`*\n\n"
+            f"Current multiplier: *{current}x lot*\n"
+            "Select new multiplier below (tap *0x* to disable trading for this strategy):"
+        )
+        await query.edit_message_text(
+            msg,
+            parse_mode="Markdown",
+            reply_markup=get_multiplier_keyboard(name, current)
+        )
+        return STRATS
+
+    elif data.startswith("strat_set_"):
+        parts = data.split("_")
+        qty = int(parts[-1])
+        name = "_".join(parts[2:-1])
+        strats[name] = qty
+        ctx.user_data["strategies"] = strats
+        return await update_strat_summary(query, ctx)
+
+    elif data == "strat_reset_all":
+        ctx.user_data["strategies"] = {s: 1 for s in deploy_core.STRATEGY_NAMES}
+        return await update_strat_summary(query, ctx)
+
+    elif data == "strat_back_main":
+        return await update_strat_summary(query, ctx)
+
+    elif data == "strat_confirm_all":
+        active_strats = {k: v for k, v in strats.items() if v > 0}
+        if not active_strats:
+            await query.answer("⚠️ Please enable at least 1 strategy (multiplier > 0) to proceed.", show_alert=True)
+            return STRATS
+
+        ctx.user_data["strategies"] = active_strats
+        summary = ", ".join(f"`{k}` {v}x" for k, v in active_strats.items())
+        b_name = ctx.user_data.get("broker", "zerodha").capitalize()
+
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🚀 Deploy Strategies", callback_data="confirm_deploy"),
+                InlineKeyboardButton("❌ Cancel", callback_data="confirm_cancel"),
+            ]
+        ])
+        await query.edit_message_text(
+            f"Ready to deploy:\n*Broker:* {b_name}\n*Active Strategies:* {summary}\n\nClick *Deploy Strategies* below to start.",
+            parse_mode="Markdown",
+            reply_markup=keyboard)
+        return CONFIRM
+
     return STRATS
 
 
 async def got_strategies(update: Update, ctx):
-    strat = {}
-    for tok in update.message.text.replace(",", " ").split():
+    txt = update.message.text.replace(",", " ").strip()
+    strat = dict(ctx.user_data.get("strategies") or {s: 1 for s in deploy_core.STRATEGY_NAMES})
+
+    for tok in txt.split():
         if ":" in tok:
             name, _, lots = tok.partition(":")
-            if name in deploy_core.STRATEGY_NAMES and lots.strip().isdigit():
-                strat[name] = int(lots)
-    if not strat:
-        await update.message.reply_text("Couldn't parse that. Example: `pr_0918:1 gamma:1`", parse_mode="Markdown")
+            clean_name = name.strip()
+            if clean_name == "pr0918": clean_name = "pr_0918"
+            if clean_name == "pr0946": clean_name = "pr_0946"
+
+            if clean_name in deploy_core.STRATEGY_NAMES and lots.strip().isdigit():
+                strat[clean_name] = int(lots.strip())
+
+    active_strats = {k: v for k, v in strat.items() if v > 0}
+    if not active_strats:
+        await update.message.reply_text("Couldn't parse strategies. Try tapping the buttons above or reply like: `pr_0918:1 gamma:1`", parse_mode="Markdown")
         return STRATS
-    ctx.user_data["strategies"] = strat
-    summary = ", ".join(f"{k} {v}x" for k, v in strat.items())
+
+    ctx.user_data["strategies"] = active_strats
+    summary = ", ".join(f"`{k}` {v}x" for k, v in active_strats.items())
     b_name = ctx.user_data.get("broker", "zerodha").capitalize()
 
     keyboard = InlineKeyboardMarkup([
@@ -321,7 +474,7 @@ async def got_strategies(update: Update, ctx):
         ]
     ])
     await update.message.reply_text(
-        f"Ready to deploy:\n*Broker:* {b_name}\n*Strategies:* {summary}\n\nClick *Deploy Strategies* below to start.",
+        f"Ready to deploy:\n*Broker:* {b_name}\n*Active Strategies:* {summary}\n\nClick *Deploy Strategies* below to start.",
         parse_mode="Markdown",
         reply_markup=keyboard)
     return CONFIRM
@@ -435,7 +588,10 @@ async def killall(update: Update, ctx):
 
 
 def main():
-    token = os.environ["SETUP_BOT_TOKEN"]
+    token = os.environ.get("SETUP_BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not token:
+        print("ERROR: Please set SETUP_BOT_TOKEN or TELEGRAM_BOT_TOKEN environment variable.")
+        sys.exit(1)
     app: Application = ApplicationBuilder().token(token).build()
     conv = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
@@ -463,7 +619,10 @@ def main():
                 CommandHandler("skip", tg_skip),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, tg_token)
             ],
-            STRATS: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_strategies)],
+            STRATS: [
+                CallbackQueryHandler(strat_button_handler, pattern="^strat_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, got_strategies)
+            ],
             CONFIRM: [
                 CallbackQueryHandler(confirm_button, pattern="^confirm_"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, do_deploy)
@@ -476,7 +635,7 @@ def main():
     app.add_handler(CommandHandler("positions", positions))
     app.add_handler(CommandHandler("exit_all", exit_all))
     app.add_handler(CommandHandler("killall", killall))
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
