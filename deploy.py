@@ -114,31 +114,61 @@ def remote_exists(path):
 def remote_file(path):
     return "yes" in ssh(f"test -f {path} && echo yes || echo no").stdout
 
+def remote_env_values(env_path, keys):
+    """Read the given keys from an existing remote .env. Returns {key: value} for
+    those present. Used to preserve crypto keys / admin creds across re-runs."""
+    r = ssh(f"cat {env_path} 2>/dev/null")
+    out = {}
+    for ln in (r.stdout or "").splitlines():
+        ln = ln.strip()
+        if ln and not ln.startswith("#") and "=" in ln:
+            k, _, v = ln.partition("=")
+            k = k.strip()
+            if k in keys:
+                out[k] = v.strip().strip("'").strip('"')
+    return out
+
 def step(n, msg): print(f"\n{BOLD}{GREEN}[{n}]{RESET} {msg}")
 def ok(msg=""): print(f"  {GREEN}✓{RESET} {msg}")
 def warn(msg): print(f"  {YELLOW}⚠{RESET} {msg}")
 
 
-def env_overrides(broker, creds, port, ws_port):
+def env_overrides(broker, creds, port, ws_port, preserve=None):
     """Return (overrides_dict, admin_user, admin_pass).
 
     OpenAlgo requires ~100 env keys (version-specific). Rather than hand-list
     them and drift, the deploy seeds .env from the repo's own `.sample.env` and
-    applies only the keys we manage below. Missing any required key makes the
-    app reject the config and crash-loop on boot.
+    applies only the keys we manage below.
+
+    CRITICAL: `preserve` holds values already present in an existing .env. The
+    encryption keys (APP_KEY / API_KEY_PEPPER / FERNET_SALT) and the admin account
+    (OPENALGO_USER / PASS / API_KEY) MUST be kept across re-runs — rotating them
+    orphans everything encrypted in the DB (TOTP, saved broker token), which
+    silently breaks login on the next deploy. So on a re-run we reuse them.
     """
     import secrets, string
+    preserve = preserve or {}
     alp = string.ascii_lowercase + string.digits
-    admin_user = "admin"
-    admin_pass = ''.join(secrets.choice(alp) for _ in range(12))
+
+    def keep(key, gen):
+        val = preserve.get(key)
+        return val if val else gen()
+
+    admin_user = preserve.get("OPENALGO_USER") or "admin"
+    admin_pass = preserve.get("OPENALGO_PASS") or ''.join(secrets.choice(alp) for _ in range(12))
     ov = {
         "BROKER_API_KEY": creds["BROKER_API_KEY"],
         "BROKER_API_SECRET": creds["BROKER_API_SECRET"],
         "REDIRECT_URL": f"http://127.0.0.1:{port}/{broker}/callback",
         "VALID_BROKERS": "zerodha" if broker == "zerodha" else "kotak",
-        "APP_KEY": secrets.token_hex(32),
-        "API_KEY_PEPPER": secrets.token_hex(32),
-        "FERNET_SALT": secrets.token_hex(32),
+        # --- generate-once: preserve across re-runs ---
+        "APP_KEY": keep("APP_KEY", lambda: secrets.token_hex(32)),
+        "API_KEY_PEPPER": keep("API_KEY_PEPPER", lambda: secrets.token_hex(32)),
+        "FERNET_SALT": keep("FERNET_SALT", lambda: secrets.token_hex(32)),
+        "OPENALGO_USER": admin_user,
+        "OPENALGO_PASS": admin_pass,
+        "OPENALGO_API_KEY": preserve.get("OPENALGO_API_KEY", ""),   # provision fills if empty
+        # --- always from current inputs ---
         "FLASK_HOST_IP": "127.0.0.1",
         "FLASK_PORT": port,
         "FLASK_ENV": "production",
@@ -146,9 +176,6 @@ def env_overrides(broker, creds, port, ws_port):
         "WEBSOCKET_PORT": ws_port,
         "WEBSOCKET_HOST": "127.0.0.1",
         "WEBSOCKET_URL": f"ws://127.0.0.1:{ws_port}",
-        "OPENALGO_USER": admin_user,
-        "OPENALGO_PASS": admin_pass,
-        "OPENALGO_API_KEY": "",                       # filled by provision step
         "TELEGRAM_BOT_TOKEN": creds["TELEGRAM_BOT_TOKEN"],
         "TELEGRAM_CHAT_ID": creds["TELEGRAM_CHAT_ID"],
         "TZ": "Asia/Kolkata",
@@ -534,14 +561,24 @@ def main():
 
     # --- 8b. Generate & upload .env ---
     step("8b", "Configuring broker")
-    overrides, admin_user, admin_pass = env_overrides(broker, creds, port, ws_port)
-    # Seed .env from the repo's own sample so EVERY required key exists for this
-    # OpenAlgo version, then overlay the keys we manage.
-    r = ssh(f"test -f {inst_dir}/.sample.env && echo yes || echo no")
-    if "yes" not in r.stdout:
-        print(f"{RED}.sample.env not found in the OpenAlgo clone — cannot build .env.{RESET}")
-        sys.exit(1)
-    ssh(f"cp {inst_dir}/.sample.env {inst_dir}/.env")
+    # CRITICAL re-run safety: if a .env already exists, read its encryption keys +
+    # admin account and PRESERVE them. Regenerating APP_KEY/FERNET_SALT/API_KEY_PEPPER
+    # would orphan everything encrypted in the DB (TOTP, broker token) and silently
+    # break login. Only seed a fresh .env from .sample.env on a first install.
+    env_exists = remote_file(f"{inst_dir}/.env")
+    preserve_keys = {"APP_KEY", "API_KEY_PEPPER", "FERNET_SALT",
+                     "OPENALGO_USER", "OPENALGO_PASS", "OPENALGO_API_KEY"}
+    preserve = remote_env_values(f"{inst_dir}/.env", preserve_keys) if env_exists else {}
+    account_exists = env_exists and bool(preserve.get("OPENALGO_API_KEY"))
+    if env_exists:
+        ok("Existing .env found — preserving encryption keys & admin account")
+    else:
+        r = ssh(f"test -f {inst_dir}/.sample.env && echo yes || echo no")
+        if "yes" not in r.stdout:
+            print(f"{RED}.sample.env not found in the OpenAlgo clone — cannot build .env.{RESET}")
+            sys.exit(1)
+        ssh(f"cp {inst_dir}/.sample.env {inst_dir}/.env")
+    overrides, admin_user, admin_pass = env_overrides(broker, creds, port, ws_port, preserve)
     import json as _json
     with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
         _json.dump(overrides, f); ov_tmp = f.name
@@ -695,9 +732,16 @@ os.execvp(sys.executable, [sys.executable] + sys.argv[1:])
 
     # --- 8i. Provision OpenAlgo API key (+ login TOTP) into .env ---
     step("8i", "Provisioning OpenAlgo API key")
-    prov = provision_api_key(cname, admin_user, admin_pass, inst_dir)
+    if account_exists:
+        # Re-run: the account + API key already exist and are still encrypted with
+        # the preserved keys. Re-provisioning would rotate the TOTP/key needlessly.
+        ok("Existing OpenAlgo account & API key preserved (no re-provision)")
+        api_key = preserve.get("OPENALGO_API_KEY")
+        prov = {"api_key": api_key, "oa_user": preserve.get("OPENALGO_USER"), "oa_totp": None}
+    else:
+        prov = provision_api_key(cname, admin_user, admin_pass, inst_dir)
     api_key = prov["api_key"]
-    if not api_key:
+    if not account_exists and not api_key:
         warn("Could not auto-provision an API key.")
         print(f"  Open the UI (run open_ui after this finishes), complete first-time")
         print(f"  setup, generate an API key (Settings → API Key), and paste it here.")
