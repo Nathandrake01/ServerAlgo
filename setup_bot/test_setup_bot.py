@@ -134,7 +134,23 @@ class TestSetupAgentHelpers(unittest.TestCase):
         self.assertFalse(_is_base32("!!!INVALID!!!"))
         self.assertFalse(_is_base32(""))
 
+    def test_diagnose_deploy_error(self):
+        from setup_agent import diagnose_deploy_error
+        diag_docker = diagnose_deploy_error("Docker pull timed out during compose up")
+        self.assertIn("Docker Build", diag_docker)
+        
+        diag_git = diagnose_deploy_error("git clone failed with status 128")
+        self.assertIn("Repository Clone Issue", diag_git)
+
+    def test_call_ai_assistant_fallback(self):
+        from setup_agent import call_ai_assistant
+        res_api = call_ai_assistant("where do I find my API key?")
+        self.assertIn("Broker API Key", res_api)
+        
+        res_totp = call_ai_assistant("how to get my totp secret?")
+        self.assertIn("External TOTP Secret", res_totp)
 
 
 if __name__ == "__main__":
     unittest.main()
+
